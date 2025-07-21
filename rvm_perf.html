@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Coding Blog - Mrutunjayya</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/prismjs/themes/prism.css">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f4f4f4;
+      line-height: 1.6;
+    }
+
+    header {
+      background: #2c3e50;
+      color: white;
+      padding: 1rem;
+      text-align: center;
+    }
+
+    nav {
+      background: #34495e;
+      padding: 1rem;
+      display: flex;
+      justify-content: center;
+      gap: 1.5rem;
+    }
+
+    nav a {
+      color: white;
+      text-decoration: none;
+      font-weight: bold;
+    }
+
+    nav a:hover {
+      text-decoration: underline;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 2rem auto;
+      background: white;
+      padding: 2rem;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+
+    pre {
+      background: #f0f0f0;
+      padding: 1rem;
+      overflow-x: auto;
+      border-left: 5px solid #007acc;
+    }
+
+    footer {
+      text-align: center;
+      padding: 1rem;
+      background: #eee;
+      margin-top: 2rem;
+    }
+	
+	h1, h2, h3, h4, h5 {
+		margin-bottom: 0.2rem;
+	}
+
+	p {
+		text-align: justify;
+		margin-top: 0.2rem;
+	}
+	
+	img {
+      width: 100%;          /* Take full width of content box */
+      display: block;
+      margin: 1rem 0;       /* Space above/below */
+      border-radius: 8px;   /* Optional styling */
+    }
+	
+	pre {
+  position: relative;
+  margin-top: 0.0rem;
+  margin: 0.rem 0;
+  padding: 0;
+  background-color: #f7f4f2;
+  border-left: 2px solid #007acc;
+  border-radius: 2px;
+  overflow: auto;
+}
+
+pre code {
+  display: block;
+  padding: 0.0rem 0.0rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  white-space: pre;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  padding: 3px 8px;
+  font-size: 0.75rem;
+  border: none;
+  background-color: #007acc;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.2s;
+}
+
+.copy-btn:hover {
+  opacity: 1;
+}
+    @media (max-width: 600px) {
+      .container {
+        padding: 1rem;
+      }
+    }
+	
+  </style>
+</head>
+<body>
+
+  <nav>
+    <a href="index.html">Home</a>    
+  </nav>
+
+  <div class="container">
+    <h2> Acheive 15-20x perfromance improvement for vision/perception model inference.</h2>
+    <h4>Introdcution:</h4>
+	The performance (runtime) of any AI model is influenced by its size and precision.  AI model developers spend time in optimizing the model size/architecture and 
+	precision to achieve better runtime performance. However, there is a limit to reducing model size and precision without losing model quality. 
+	
+	<img src="fps_table.png">
+	
+	<h4>Step-0: Basic setup and Naive Inference [CPU Decode, CPU Pre & Post Processing]:</h4>
+	<h5><u>Enviroment Setup:</u></h5>
+	For our experiments we will be using system following configurations:
+	<p>Create a python virtual environment “seg_env”:</p>
+<pre><code class="language-bash">
+python -m venv seg_env
+seg_env\Scripts\activate
+</code></pre>
+
+	<p>Install depencies</p>
+<pre><code class="language-bash">
+pip install cuda-python
+pip install opencv-python
+pip install tensorrt
+pip install PyNvVideoCodec
+</code></pre>
+
+	<h5><u>Inference:</u></h5>
+	<p>TensorRT setup: working with NVIDIA TensorRT based inference, there are two critical steps to handle after exporting your optimized model: first, loading the engine, and second, allocating GPU memory buffers for input and output tensors.
+</p>
+	<pre><code class="language-python">
+def load_engine(model_file):
+    assert os.path.exists(model_file)
+    trt_runtime = trt.Runtime(trt_logger)
+    with open(model_file, "rb") as f:
+        return trt_runtime.deserialize_cuda_engine(f.read())
+	 </code></pre>
+	 <p>The function `load_engine(model_file)` is responsible for deserializing a TensorRT engine. It loads a serialized TensorRT engine from disk into memory. 
+	 The process begins by creating a TensorRT Runtime object, which is necessary for deserializing the engine. After that, 
+	 the function utilizes `deserialize_cuda_engine()` to convert the raw byte data back into a usable engine object in memory. 
+	 TensorRT engines are pre-optimized and specifically tailored binary blobs for hardware. By loading the engine in this way, we can 
+	 bypass the model parsing and building stage at runtime, allowing for faster inference..</p>
+	<pre><code class="language-python">
+	
+def allocate_buffers(trt_engine):
+    inputs   = {}
+    outputs  = {}
+    bindings = []
+
+    for i in range(trt_engine.num_io_tensors):
+        tensor_name = trt_engine.get_tensor_name(i)
+        shape = trt_engine.get_tensor_shape(tensor_name)
+        dtype = trt_engine.get_tensor_dtype(tensor_name)
+        size  = np.prod(shape) * dtype.itemsize
+
+        #allocate tensor on GPU
+        d_memory = checkCudaErrors(cuda.cuMemAlloc(size))
+        bindings.append(d_memory)
+
+        if trt_engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
+            inputs[tensor_name] = {'d_mem':d_memory, 'shape': shape, 'size': size, 'dtype': dtype}
+        else:
+            outputs[tensor_name] = {'d_mem': d_memory, 'shape': shape, 'size': size, 'dtype': dtype}
+
+    return inputs, outputs, bindings
+	</code></pre>
+	<p text-align: justify;>The function `allocate_buffers(trt_engine, trt_context)` is responsible for setting up memory for inference. Once the engine is loaded, 
+	it prepares GPU memory buffers for both inputs and outputs. The "inputs" and "outputs" are dictionaries that store GPU memory pointers along with metadata, 
+	which includes the shape, data type, and size of each tensor. The "bindings" list contains device memory pointers in the specific order that TensorRT expects 
+	during inference. To perform all GPU memory allocation and operations, I utilized the "cuda-python" library. Additionally, `checkCudaErrors()` is a helper function 
+	that validates the success of CUDA API calls.</p>
+	
+	<p> Lets write inference function that executes sequence of steps complete the inference. The funcation does the following:</p>
+
+	<pre><code class="language-python">
+def inference(inputs, outputs, bindings, trt_context, input_video_file):
+    cap = cv2.VideoCapture(input_video_file)
+    frame_count = 0
+    out_mask = None
+
+    start_time = time.time()
+    while cap.isOpened():
+        ret, frame = cap.read()
+
+        if not ret:
+            break
+
+        if 0 == frame_count:
+            for i in range(4):
+                tmp_zeros = np.zeros((inputs['r' + str(i+1) + 'i']['shape']), dtype=np.float32)
+                #copy the 'ri' tensors to GPU
+                checkCudaErrors(cuda.cuMemcpyHtoD(inputs['r' + str(i+1) + 'i']['d_mem'], np.ascontiguousarray(tmp_zeros), inputs['r' + str(i+1) + 'i']['size']))
+
+            frame_h, frame_w, frame_c = frame.shape
+            out_mask = np.empty((1, frame_h, frame_w)).astype(np.float32)
+
+        # convert uint8 HWC frame to fp32 CHW tensor
+        frame = frame.astype(np.float32) / 255.0
+        frame = np.transpose(frame, (2, 0, 1))[np.newaxis, :]
+
+        # Copy frame tensor to GPU
+        checkCudaErrors(cuda.cuMemcpyHtoD(inputs['src']['d_mem'], np.ascontiguousarray(frame), inputs['src']['size']))
+
+        # Execute TensorRT in engine
+        trt_context.execute_v2(bindings)
+
+        # Copy result frame (mask) to host
+        checkCudaErrors(cuda.cuMemcpyDtoH(np.ascontiguousarray(out_mask), outputs['pha']['d_mem'], outputs['pha']['size']))
+
+        # Apply mask to original frame and convert back to HWC
+        frame = frame * out_mask
+        frame = np.squeeze(frame, axis=0)
+        frame = np.transpose(frame, (1, 2, 0))
+
+        # cv2.imshow("Frame", frame)
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #    break
+
+        frame_count += 1
+
+    end_time = time.time()
+    total_time = end_time - start_time
+    fps = frame_count / total_time
+    print(f"Total Frame: {frame_count},  Sync FPS: {fps}")
+
+def main():
+    trt_engine = load_engine("rvm_mobilenetv3_fp32_sim_1080p_modified.trt")
+    trt_context = trt_engine.create_execution_context()
+
+    inputs, outputs, bindings = allocate_buffers(trt_engine)
+    input_video_file = "codylexi.mp4"
+
+    inference(inputs, outputs, bindings, trt_context, input_video_file)
+    
+main()
+	
+	</code></pre>
+	
+	<h4>Step-1:CPU Decode, GPU pre & post processing:</h4>
+	<p>To offload pre-processing and post-processing steps to the GPU, we need to write custom CUDA kernels. 
+		The following two kernels, "pre_process" and "post_process," perform the respective operations on the input data. 
+		These are naïve implementations; further optimization can be done (which is not the scope of this article).</P>
+
+	<p>The "pre_process" kernel takes a UINT8 (0-255) image array in HWC (Height, Width, Channels) format as input and converts it 
+	into tensor format CHW (Channels, Height, Width) of float32 (normalized between 0-1).</P> 
+
+	<pre><code class="language-cpp">
+// CUDA Kernel for PRE PROCESSING
+// uint8 -> NHWC -> NCHW -> fp32
+extern "C" __global__ void pre_process(unsigned char* input, float* output, int stride)
+{
+    int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if (tid &lt; stride)
+    {
+        output[0 * stride + tid] = input[tid * 3 + 0] / 255.0f;
+        output[1 * stride + tid] = input[tid * 3 + 1] / 255.0f;
+        output[2 * stride + tid] = input[tid * 3 + 2] / 255.0f;
+    }
+}
+</code></pre>
+
+<P>Finally, the "post_process" kernel applies the mask, "pha" tensor, generated by the model to the "frg" (foreground) 
+tensor produced by the model and converts the float32 tensor back to UINT8 in HWC format. </P>
+<pre><code class="language-cpp">
+//CUDA Kernel for POST PROCESSING
+//1. Apply mask
+//2. NCHW->NHWC->uint8
+extern "C" __global__ void post_process(float* fgr, float* pha, char* output, int stride)
+{
+	int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    if(tid &lt; stride)
+    {
+		fgr[0 * stride + tid] = fgr[0 * stride + tid] * pha[0 * stride + tid];
+        fgr[1 * stride + tid] = fgr[1 * stride + tid] * pha[0 * stride + tid];
+        fgr[2 * stride + tid] = fgr[2 * stride + tid] * pha[0 * stride + tid];
+	}
+	__syncthreads();
+	for(size_t c = 0; c != 3; ++c)
+    {
+		output[tid * 3 + c] = (unsigned char)(fgr[c * stride + tid] * 255);
+	}        
+}   
+</code></pre>
+
+<ul>
+	<li>Next, we set up the host-side code by allocating GPU memory for input and output frames. 
+	This is the next step after calling the “allocate_buffers()” function from Step 0. 
+	We use the “CUDA-Python” library [link]. I’ve adapted the “checkCudaErrors()” [link] 
+	helper function from the official CUDA-Python library. This function returns an error code if one occurs; otherwise, 
+	it returns the corresponding value from the function. In the usage below, it returns the GPU memory addresses for the 
+	“input” and “output” tensors.</li>
+</ul>
+<pre><code class="language-python">
+ _, frame_channel, frame_height, frame_width = inputs['src']['shape']
+d_frame_size = frame_channel * frame_height * frame_width * np.dtype(np.uint8).itemsize
+d_in_frame  = checkCudaErrors(cuda.cuMemAlloc(d_frame_size))
+d_out_frame = checkCudaErrors(cuda.cuMemAlloc(d_frame_size))
+</code></pre>
+
+<p>In ‘CUDA-Python,’ we cannot directly compile and execute the CUDA kernel from a “.cu” file as we can in C/C++. 
+Instead, we need to either read the “.cu” file as a string or write the CUDA kernel as a string in Python. 
+For more information on how to format kernels as strings, refer to the GitHub [link] for this blog, 
+specifically about “cuda_pre_post_kernels.”</p>
+<p>The following code snippet demonstrates how to read the string format of CUDA kernels and load the “pre_process” and 
+“post_process” kernels. I have utilized the “KernelHelper” function from the “CUDA-Python” library [link]. 
+This function reads the string representations of the pre-processing and post-processing kernels and compiles them. 
+For more details, refer to the helper function in the repository [link]. </p>
+
+<pre><code class="language-python">
+cudaKernelHandle = KernelHelper(cuda_pre_post_kernels, int(cudaDevice))
+cuda_pre_process_kernel  = cudaKernelHandle.getFunction(b'pre_process')
+cuda_post_process_kernel = cudaKernelHandle.getFunction(b'post_process')
+</code></pre>
+
+<p>Now we set the parameters of the kernel and configuration (Block and Grid Dimensions). </p>
+<pre><code class="language-python">
+kernel_args_pre_process  = ((d_in_frame, inputs['src']['d_mem'], np.int32(frame_height * frame_width), np.int32(0)),
+                            (None, None, ctypes.c_int, ctypes.c_int))
+
+kernel_args_post_process = ((outputs['fgr']['d_mem'], outputs['pha']['d_mem'], d_out_frame, np.int32(frame_height * frame_width)),
+                            (None, None, None, ctypes.c_int))
+
+#Initialize pre and post processing CUDA kernels
+cuda_block_dim = (1024,1,1)
+cuda_grid_dim  = ((frame_height * frame_width) // 1024, 1, 1)
+</code></pre>
+
+<p>Copy the UINT8 frame to GPU ("d_in_frame")</p>
+<pre><code class="language-python">
+#Copy frame to GPU
+checkCudaErrors(cuda.cuMemcpyHtoD(d_in_frame, frame, d_frame_size))
+</code></pre>
+
+<p> Launch ‘pre_process’ kernel to convert UIN8 HWC to Float32 CHW. Store result into the TensorRT input binding (GPU Memory location)  “inputs['src']['d_mem']”.  </p>
+<pre><code class="language-python">
+#Launch pre-preocessing kernel
+checkCudaErrors(cuda.cuLaunchKernel(cuda_pre_process_kernel,
+									cuda_grid_dim[0], cuda_grid_dim[1], cuda_grid_dim[2],
+                                    cuda_block_dim[0], cuda_block_dim[1], cuda_block_dim[2],
+                                    0, 0,
+                                    kernel_args_pre_process, 0))
+</code></pre>
+
+<p>Run the inference with TensorRT bindings set in "allocate_buffers" funcation</p>
+<pre><code class="language-python">
+#Launch TensortRT Inference
+trt_context.execute_v2(bindings)
+</code></pre>
+
+<p>After inference, launch the post-process kernel. This kernel applies the binary mask to resultinf foreground image and convet Float32 CHW tensor to HWC UINT8 frame. After the post-process copy the results to host </p>
+<pre><code class="language-python">
+#Launch post-process kernel: Apply mask and convert uint8 image
+checkCudaErrors(cuda.cuLaunchKernel(cuda_post_process_kernel,
+                                    cuda_grid_dim[0], cuda_grid_dim[1], cuda_grid_dim[2],
+                                    cuda_block_dim[0], cuda_block_dim[1], cuda_block_dim[2],
+                                    0, 0,
+                                    kernel_args_post_process, 0))
+
+#Copy frame to CPU
+checkCudaErrors(cuda.cuMemcpyDtoH(frame, d_out_frame, d_frame_size))
+</code></pre>
+			
+<p> <b> The overall inference with offload of pre and post processing to GPU: ~100FPS. About 6x performance improvement. However we still have the overhead of CPU decoding and sending data to GPU. </b></p>			
+	<h4>Step-2:GPU Decode, GPU Pre & Post Processing:</h4>
+
+<pre><code class="language-python">
+import PyNvVideoCodec as nvc
+
+decoder = nvc.SimpleDecoder(enc_file_path=input_video_file,
+                            gpu_id=cudaDevice,
+                            use_device_memory=True,
+                            need_scanned_stream_metadata=True,
+                            output_color_type = nvc.OutputColorType.RGBP)
+					  
+</code></pre>
+
+<pre><code class="language-python">
+_, frame_channel, frame_height, frame_width = inputs['src']['shape']
+d_frame_size = frame_channel * frame_height * frame_width * np.dtype(np.uint8).itemsize
+d_out_frame  = checkCudaErrors(cuda.cuMemAlloc(d_frame_size))
+h_out_frame  = np.empty((frame_height, frame_width, frame_channel), dtype=np.uint8)
+</code></pre>
+
+<pre><code class="language-python">
+for frame in decoder:
+    frame_plane_ptr = frame.GetPtrToPlane(0)
+    kernel_args_pre_process = ((cuda.CUdeviceptr(frame_plane_ptr), inputs['src']['d_mem'], np.int32(frame_height * frame_width)),
+                               (None, None, ctypes.c_int))
+</code></pre>
+
+<pre><code class="language-python">
+# Copy frame to CPU
+checkCudaErrors(cuda.cuMemcpyDtoH(h_out_frame, d_out_frame, d_frame_size))
+</code></pre>
+
+	<h4>Step-3:[FP16] GPU Decode, GPU Pre & Post Processing:</h4>
+
+<pre><code class="language-cpp">
+//PRE PROCESSING
+//uint8->NHWC->NCHW->fp16
+extern "C" __global__ void pre_process_fp16(unsigned char* input, __half *output, int stride)
+{
+	int tid = blockDim.x * blockIdx.x + threadIdx.x;
+	if(tid &lt; stride * 3)
+	{
+		output[0 * stride + tid] = __float2half(input[0 * stride + tid] / 255.0f);
+        output[1 * stride + tid] = __float2half(input[1 * stride + tid] / 255.0f);
+        output[2 * stride + tid] = __float2half(input[2 * stride + tid] / 255.0f);
+    }
+}
+</code></pre>
+<pre><code class="language-cpp">
+//POST PROCESSING
+//1. Apply mask
+//2. NCHW->NHWC->uint8
+extern "C" __global__ void post_process_fp16(__half* fgr, __half* pha, char* output, int stride)
+{
+	int tid = blockDim.x * blockIdx.x + threadIdx.x;
+	if(tid &lt; stride)
+	{
+		fgr[0 * stride + tid] = fgr[0 * stride + tid] * pha[0 * stride + tid];
+        fgr[1 * stride + tid] = fgr[1 * stride + tid] * pha[0 * stride + tid];
+        fgr[2 * stride + tid] = fgr[2 * stride + tid] * pha[0 * stride + tid];
+	}
+    __syncthreads();
+    for(size_t c = 0; c != 3; ++c)
+    {
+		float value = __half2float(__hmul(fgr[c * stride + tid], 255));
+		value = max(0.0f, min(255.0f, value)); 
+        output[tid * 3 + c] = static_cast<unsigned char>(value);
+	}        
+} 
+</code></pre>
+	<h4>Step-4:[FP16 Batching] GPU Decode, GPU Pre & Post Processing:</h4>
+
+<pre><code class="language-cpp">
+extern "C" __global__ void pre_process_fp16_batched(uint64_t* frame_ptrs, __half *output, 
+                                                        int height, int width, int channel, int batch_size)
+{
+	int tid = blockDim.x * blockIdx.x + threadIdx.x;
+	int batch_stride = height * width * channel;
+	int stride = height * width;
+	if(tid &lt; batch_stride)
+	{               
+		for(int i=0; i &lt; batch_size; i++)
+		{
+			unsigned char* frame = reinterpret_cast&lt;unsigned char*>(frame_ptrs[i]);
+            output[(0 * stride + tid) + (i * batch_stride)] = __float2half(frame[0 * stride + tid] / 255.0f);
+            output[(1 * stride + tid) + (i * batch_stride)] = __float2half(frame[1 * stride + tid] / 255.0f);
+            output[(2 * stride + tid) + (i * batch_stride)] = __float2half(frame[2 * stride + tid] / 255.0f);
+		}            
+	}
+}
+</code></pre>
+
+<pre><code class="language-cpp">
+//Batched POST PROCESSING
+extern "C" __global__ void post_process_fp16_batched(__half* fgr, __half* pha, char* output, 
+                                                      int height, int width, int channel, int batch_size)
+    {   
+        int tid = blockDim.x * blockIdx.x + threadIdx.x;
+        int stride = height * width;
+        int batch_stride = height * width * channel;
+        
+        if(tid &lt; stride)
+        {
+            for (int i=0; i &lt; batch_size; i++)
+            {
+                fgr[(i * batch_stride) + (0 * stride + tid)] = fgr[(i * batch_stride) + (0 * stride + tid)] * pha[(i * stride) + ( 0 * stride + tid)];
+                fgr[(i * batch_stride) + (1 * stride + tid)] = fgr[(i * batch_stride) + (1 * stride + tid)] * pha[(i * stride) + ( 0 * stride + tid)];
+                fgr[(i * batch_stride) + (2 * stride + tid)] = fgr[(i * batch_stride) + (2 * stride + tid)] * pha[(i * stride) + ( 0 * stride + tid)];
+            }
+        }
+
+        __syncthreads();
+        
+        for (int i=0; i &lt; batch_size; i++)
+        {
+            for(size_t c = 0; c != 3; ++c)
+            {
+                float value = __half2float(__hmul(fgr[(i * batch_stride) + (c * stride + tid)], 255));
+                value = max(0.0f, min(255.0f, value)); 
+                output[(i * batch_stride) + (tid * 3 + c)] = static_cast<unsigned char>(value);
+            }
+        }                
+    }
+</code></pre>
+
+<pre><code class="language-python">
+batch_size, frame_channel, frame_height, frame_width = inputs['src']['shape']
+decoder = nvc.ThreadedDecoder(enc_file_path=input_video_file,
+                              buffer_size=batch_size,
+                              cuda_context=0,
+                              cuda_stream=0,
+                              use_device_memory=True,
+                              output_color_type=nvc.OutputColorType.RGBP)
+</code></pre>
+
+<pre><code class="language-python">
+d_frame_size_bytes = frame_channel * frame_height * frame_width * np.dtype(np.uint8).itemsize
+d_frame_batch_size_bytes = d_frame_size_bytes * batch_size
+d_out_frame = checkCudaErrors(cuda.cuMemAlloc(d_frame_batch_size_bytes))
+h_out_frame = np.empty((batch_size, frame_height, frame_width, frame_channel), dtype=np.uint8)
+
+cudaKernelHandle = KernelHelper(cuda_pre_post_kernels_fp16, int(cudaDevice))
+cuda_pre_process_kernel = cudaKernelHandle.getFunction(b'pre_process_fp16_batched')
+cuda_post_process_kernel = cudaKernelHandle.getFunction(b'post_process_fp16_batched')
+</code></pre>
+
+<pre><code class="language-python">
+d_frame_prt_array = None
+while True:
+	frames = decoder.get_batch_frames(batch_size)
+	if len(frames) == 0:
+		break
+
+	frame_ptr_list = []
+	for i, frame in enumerate(frames):
+		frame_device_ptr = int(frame.GetPtrToPlane(0))
+        frame_ptr_list.append(frame_device_ptr)
+
+	frame_ptr_array = np.array(frame_ptr_list, dtype=np.uint64)
+	if d_frame_prt_array == None:
+		d_frame_prt_array = checkCudaErrors(cuda.cuMemAlloc(frame_ptr_array.nbytes))
+            
+	# Copy frame list Device
+    checkCudaErrors(cuda.cuMemcpyHtoD(d_frame_prt_array, frame_ptr_array, frame_ptr_array.nbytes))
+
+	kernel_args_pre_process = ((d_frame_prt_array, inputs['src']['d_mem'], np.int32(frame_height), np.int32(frame_width), np.int32(frame_channel), np.int32(batch_size)),
+                               (None, None, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int))
+</code></pre>
+    
+  </div>
+
+  <footer>
+    &copy; 2025 Mrutunjayya | All rights reserved.
+  </footer>
+
+  <script src="https://unpkg.com/prismjs/prism.js"></script>
+  <script src="https://unpkg.com/prismjs/components/prism-python.min.js"></script>
+</body>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll("pre > code").forEach(codeBlock => {
+    const pre = codeBlock.parentNode;
+
+    const button = document.createElement("button");
+    button.className = "copy-btn";
+    button.textContent = "Copy";
+
+    pre.appendChild(button);
+
+    button.addEventListener("click", () => {
+      navigator.clipboard.writeText(codeBlock.innerText).then(() => {
+        button.textContent = "Copied!";
+        setTimeout(() => (button.textContent = "Copy"), 1500);
+      });
+    });
+  });
+});
+</script>
+
+</html>

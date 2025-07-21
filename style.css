@@ -1,0 +1,51 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    background-color: #f8f8f8;
+}
+
+header {
+    background-color: #333;
+    padding: 1em;
+}
+
+header ul {
+    list-style: none;
+    display: flex;
+    justify-content: center;
+    gap: 2em;
+    padding: 0;
+    margin: 0;
+}
+
+header ul li a {
+    color: white;
+    text-decoration: none;
+}
+
+.container {
+    display: flex;
+    padding: 2em;
+    gap: 2em;
+}
+
+.profile {
+    flex: 1;
+    max-width: 300px;
+    text-align: center;
+}
+
+.profile img {
+    width: 150px;
+    border-radius: 50%;
+    margin-bottom: 1em;
+}
+
+.about {
+    flex: 2;
+}
+
+.social-icons img {
+    width: 24px;
+    margin: 0 5px;
+}
