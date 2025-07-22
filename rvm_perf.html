@@ -111,6 +111,13 @@ pre code {
   transition: opacity 0.2s;
 }
 
+figcaption {
+  font-family: 'Arial', sans-serif;
+  font-size: 14px;
+  color: #333;
+  text-align: center;
+}
+
 .copy-btn:hover {
   opacity: 1;
 }
@@ -129,12 +136,38 @@ pre code {
   </nav>
 
   <div class="container">
-    <h2>Achieve 15-20x performance improvement for vision/perception model inference.</h2>
+    <h2> Achieve 15-20x perfromance improvement for vision/perception model inference.</h2>
     <h4>Introduction:</h4>
-	The performance (runtime) of any AI model is influenced by its size and precision.  AI model developers spend time in optimizing the model size/architecture and 
-	precision to achieve better runtime performance. However, there is a limit to reducing model size and precision without losing model quality. 
 	
+	<p>Developers aim to run vision perception models, such as YOLO and segmentation algorithms, in real-time. The performance (runtime) of any AI model is influenced by its size and precision. To enhance runtime performance, AI model developers invest time in optimizing both the model's size and architecture, as well as its precision. However, there is a limit to how much one can reduce model size and precision without sacrificing its quality.</p>
+	
+	<p>
+	Often overlooked are the systems or methods surrounding model inference. This includes tasks like converting input images or frames to tensor format (from HWC to CHW), normalizing values to a float32 range of 0-1, or transferring data between the CPU and GPU for inference. These pre-processing and post-processing steps, as well as data movement, can create bottlenecks that increase the total inference runtime. In this blog, we will explore ways to optimize these steps to achieve faster inference for vision perception models.
+	</p>
+	
+	<p>
+	Here are the naive steps involved in running inference for a vision perception model:
+	</p>
+	<ul>
+		<li>Load the model and allocate the necessary buffers for input and output.</li>                
+        <li>Decode the image or video file.</li>                
+        <li>Normalize the data to a range of 0 to 1.</li>   
+		<li>Convert the data to tensor format (i.e., from HWC to CHW).</li>
+		<li>Transfer the tensor to the GPU.</li>
+		<li>Execute the inference process.</li>
+		<li>Copy the results back to the CPU.</li>
+		<li>Convert the tensor back to UINT8 format (i.e., from CHW to HWC).</li>
+	</ul>
+	
+	<b>Note: The end of the section "step-0" outlines the time required for each step in the naive inference approach.</b>
+	
+	<p>The following figure summarizes the performance improvements that will be discussed in this blog post.</p>
+	<figure>
 	<img src="fps_table.png">
+	<figcaption>Figure: Performance improvement from optimizing the each step. *Numbers are averaged over multiple runs</figcaption>
+	</figure>
+	
+	<p>Complete code for the blog can be found here: <a href="https://github.com/mjayw2014/rvm_perf_inference">link</a> </p>
 	
 	<h4>Step-0: Basic setup and Naive Inference [CPU Decode, CPU Pre & Post Processing]:</h4>
 	<h5><u>Enviroment Setup:</u></h5>
@@ -263,6 +296,11 @@ def main():
 main()
 	
 	</code></pre>
+	<p>The following Table 1 provides a breakdown of the time taken for each step. The majority of the time is spent on pre-processing, post-processing, and the transfer of data between the CPU and GPU. Running the asynchronous mode of inference does not result in significant improvements because the time taken for pre-processing and post-processing far exceeds the inference time.</p>
+	<figure>
+	<img src="step_0.png" width="300" height="400">
+	<figcaption>Table.1: Running time of each step.</figcaption>
+	</figure>
 	
 	<h4>Step-1:CPU Decode, GPU pre & post processing:</h4>
 	<p>To offload pre-processing and post-processing steps to the GPU, we need to write custom CUDA kernels. 
@@ -310,14 +348,14 @@ extern "C" __global__ void post_process(float* fgr, float* pha, char* output, in
 }   
 </code></pre>
 
-<ul>
-	<li>Next, we set up the host-side code by allocating GPU memory for input and output frames. 
+<p>
+	Next, we set up the host-side code by allocating GPU memory for input and output frames. 
 	This is the next step after calling the “allocate_buffers()” function from Step 0. 
 	We use the “CUDA-Python” library [link]. I’ve adapted the “checkCudaErrors()” [link] 
 	helper function from the official CUDA-Python library. This function returns an error code if one occurs; otherwise, 
 	it returns the corresponding value from the function. In the usage below, it returns the GPU memory addresses for the 
-	“input” and “output” tensors.</li>
-</ul>
+	“input” and “output” tensors.
+</p>
 <pre><code class="language-python">
  _, frame_channel, frame_height, frame_width = inputs['src']['shape']
 d_frame_size = frame_channel * frame_height * frame_width * np.dtype(np.uint8).itemsize
@@ -388,8 +426,22 @@ checkCudaErrors(cuda.cuLaunchKernel(cuda_post_process_kernel,
 checkCudaErrors(cuda.cuMemcpyDtoH(frame, d_out_frame, d_frame_size))
 </code></pre>
 			
-<p> <b> The overall inference with offload of pre and post processing to GPU: ~100FPS. About 6x performance improvement. However we still have the overhead of CPU decoding and sending data to GPU. </b></p>			
+<p> The overall inference with offload of pre and post processing to GPU: ~100FPS. However we still have the overhead of CPU decoding and sending data to GPU. Table 2: Time taken by each step </p>			
+	<figure>
+	<img src="step_1.png" width="300" height="400">
+	<figcaption>Table.2: Running time of each step.</figcaption>
+	</figure>
 	<h4>Step-2:GPU Decode, GPU Pre & Post Processing:</h4>
+
+<p>In the previous step, we examined the performance after offloading pre- and post-processing tasks to the GPU. However, we still need to decode the video frames on the CPU, copy them to the GPU, and convert their format. What if we offloaded video decoding to the GPU as well?</p>
+
+<p>To decode video on the GPU, we can use PyNvVideoCodec, which is NVIDIA's Python-based library providing APIs for hardware-accelerated video encoding and decoding on NVIDIA GPUs. The class `nvc.SimpleDecoder` accepts a video file as input and delivers the decoded frames. The following code demonstrates this process. </p>
+
+<p>It's important to note two key parameters: "use_device_memory=True" and "output_color_type=nvc.OutputColorType.RGBP":</p>
+<ul>
+<li>`use_device_memory=True`: This parameter keeps the decoded frames in GPU memory.</li>
+<li>`output_color_type=nvc.OutputColorType.RGBP`: This setting converts the decoded frames to CHW (tensor format). By doing this, we eliminate the need for format conversion in our "pre_process" CUDA kernel; we only need to normalize the data to a range of 0 to 1.</li>
+</ul>
 
 <pre><code class="language-python">
 import PyNvVideoCodec as nvc
@@ -402,13 +454,18 @@ decoder = nvc.SimpleDecoder(enc_file_path=input_video_file,
 					  
 </code></pre>
 
+<p>We allocate one less buffer on GPU and no manual copy of data from CPU to GPU</p>
 <pre><code class="language-python">
 _, frame_channel, frame_height, frame_width = inputs['src']['shape']
 d_frame_size = frame_channel * frame_height * frame_width * np.dtype(np.uint8).itemsize
 d_out_frame  = checkCudaErrors(cuda.cuMemAlloc(d_frame_size))
 h_out_frame  = np.empty((frame_height, frame_width, frame_channel), dtype=np.uint8)
+
+#Load the modified CUDA kernel for normalizing decoded frame to 0-1.
+cuda_pre_process_kernel = cudaKernelHandle.getFunction(b'pre_process_2')
 </code></pre>
 
+<p>However we need to pass the reference of the decoded frame. Following code passes pointer to decoded frame as parameter to pre-process kernel. "cuda.CUdeviceptr" returns GPU memory address of the frame.</p>
 <pre><code class="language-python">
 for frame in decoder:
     frame_plane_ptr = frame.GetPtrToPlane(0)
@@ -416,16 +473,31 @@ for frame in decoder:
                                (None, None, ctypes.c_int))
 </code></pre>
 
-<pre><code class="language-python">
-# Copy frame to CPU
-checkCudaErrors(cuda.cuMemcpyDtoH(h_out_frame, d_out_frame, d_frame_size))
+<p>Following is Modified CUDA kernel, performing 0-1 normalization </P>
+<pre><code class="language-cpp">
+extern "C" __global__ void pre_process_2(unsigned char* input, float* output, int stride)
+{
+	int tid = blockDim.x * blockIdx.x + threadIdx.x;
+	if(tid ;lt stride)
+	{
+		output[0 * stride + tid] = input[0 * stride + tid] / 255.0f;
+		output[1 * stride + tid] = input[1 * stride + tid] / 255.0f;
+		output[2 * stride + tid] = input[2 * stride + tid] / 255.0f;
+	}
+    __syncthreads();
+}
 </code></pre>
-
+<p>Following shows the speedup achieved by offloading video decoding to GPU.</p>
+<figure>
+	<img src="step_2.png" width="300" height="400">
+	<figcaption>Table.3: Running time of each step.</figcaption>
+	</figure>	
+	
 	<h4>Step-3:[FP16] GPU Decode, GPU Pre & Post Processing:</h4>
-
+<p>We have achieved a significant performance improvement by offloading CPU tasks to the GPU. Further speed gains can be realized by using a quantized model. In this next phase, we will experiment with an FP16 model. Please refer to the blog for instructions on how to convert the ONNX model to FP16. Our experimental model accepts FP16 inputs, so we need to modify the preprocessing and postprocessing kernels accordingly. Below is the CUDA kernel used to convert UINT8 to FP16. We utilize the CUDA API function `__float2half` for this conversion.</p>
 <pre><code class="language-cpp">
 //PRE PROCESSING
-//uint8->NHWC->NCHW->fp16
+//uint8->fp16
 extern "C" __global__ void pre_process_fp16(unsigned char* input, __half *output, int stride)
 {
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
@@ -437,6 +509,8 @@ extern "C" __global__ void pre_process_fp16(unsigned char* input, __half *output
     }
 }
 </code></pre>
+
+<p>And similarly for post-process kernel we use "_half2float" API to convert FP16-->FP32-->UINT8</p>
 <pre><code class="language-cpp">
 //POST PROCESSING
 //1. Apply mask
@@ -459,8 +533,14 @@ extern "C" __global__ void post_process_fp16(__half* fgr, __half* pha, char* out
 	}        
 } 
 </code></pre>
+<p>Then only change needed was the CUDA Kernels and we get the following speed up</p>
+<figure>
+	<img src="step_3.png" width="300" height="400">
+	<figcaption>Table.3: Running time of each step.</figcaption>
+</figure>
 	<h4>Step-4:[FP16 Batching] GPU Decode, GPU Pre & Post Processing:</h4>
 
+<p>Since FP16 inference makes pre- and post-processing faster, we can offload more work to the GPU by performing these operations in batches. To enable batch-wise inference, we modified the CUDA kernels. The input to the kernels consists of a list of pointers to frames, with the size of the list equal to the “batch_size.” Both the pre-processing and post-processing kernels iterate over each batch and perform the required operations.</p>
 <pre><code class="language-cpp">
 extern "C" __global__ void pre_process_fp16_batched(uint64_t* frame_ptrs, __half *output, 
                                                         int height, int width, int channel, int batch_size)
@@ -513,7 +593,7 @@ extern "C" __global__ void post_process_fp16_batched(__half* fgr, __half* pha, c
         }                
     }
 </code></pre>
-
+<p>Next, we need to decode the batched frames. The PvNvVideoCodec framework offers the "nvc.ThreadedDecoder()" API, which returns decoded frames according to the specified batch size.</p>
 <pre><code class="language-python">
 batch_size, frame_channel, frame_height, frame_width = inputs['src']['shape']
 decoder = nvc.ThreadedDecoder(enc_file_path=input_video_file,
@@ -535,6 +615,7 @@ cuda_pre_process_kernel = cudaKernelHandle.getFunction(b'pre_process_fp16_batche
 cuda_post_process_kernel = cudaKernelHandle.getFunction(b'post_process_fp16_batched')
 </code></pre>
 
+<p>For each frame in the batch, we list the GPU memory, and this list is passed to the kernel for preprocessing.</p>
 <pre><code class="language-python">
 d_frame_prt_array = None
 while True:
@@ -557,8 +638,18 @@ while True:
 	kernel_args_pre_process = ((d_frame_prt_array, inputs['src']['d_mem'], np.int32(frame_height), np.int32(frame_width), np.int32(frame_channel), np.int32(batch_size)),
                                (None, None, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int))
 </code></pre>
-    
-  </div>
+<p>The following table shows the performance gain achieved with all optimizations combined with batch processing. The total time can be divided by the batch size to estimate the time for each frame.</p>
+<figure>
+	<img src="step_4.png" width="300" height="400">
+	<figcaption>Table.4: Running time of each step.</figcaption>
+</figure>
+<h4>References</h4>
+<ul>
+	<li>PyNvVideoCodec: <a href="https://catalog.ngc.nvidia.com/orgs/nvidia/resources/pynvvideocodec">https://catalog.ngc.nvidia.com/orgs/nvidia/resources/pynvvideocodec</a></li>                
+	<li>CUDA-Python: <a href="https://github.com/NVIDIA/cuda-python">https://github.com/NVIDIA/cuda-python</a></li>                	            
+</ul>
+
+</div>
 
   <footer>
     &copy; 2025 Mrutunjayya | All rights reserved.
